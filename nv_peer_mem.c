@@ -46,16 +46,20 @@
 #define DRV_RELDATE	__DATE__
 
 #define peer_err(FMT, ARGS...)  printk(KERN_ERR   DRV_NAME " %s:%d " FMT, __FUNCTION__, __LINE__, ## ARGS)
-#define peer_info(FMT, ARGS...) printk(KERN_INFO  DRV_NAME " %s:%d " FMT, __FUNCTION__, __LINE__, ## ARGS)
 
-#if 0
-#define peer_dbg(FMT, ARGS...)  do { \
-        if (printk_ratelimit()) \
-            printk(KERN_DEBUG DRV_NAME " %s:%d " FMT, __FUNCTION__, __LINE__, ## ARGS); \
-    } while(0)
-#else
-#define peer_dbg(FMT, ARGS...)  do { } while(0)
-#endif
+static int enable_info = 0;
+#define peer_info(FMT, ARGS...)                                         \
+        do {                                                            \
+                if (enable_info)                                        \
+                        printk(KERN_INFO  DRV_NAME " %s:%d " FMT, __FUNCTION__, __LINE__, ## ARGS); \
+        } while(0)
+
+static int enable_dbg = 0;
+#define peer_dbg(FMT, ARGS...)                                          \
+        do {                                                            \
+                if (enable_dbg && printk_ratelimit())                   \
+                        printk(KERN_DEBUG DRV_NAME " %s:%d " FMT, __FUNCTION__, __LINE__, ## ARGS); \
+        } while(0)
 
 #define MAX_SG_DUMP 10
 
@@ -63,6 +67,11 @@ MODULE_AUTHOR("Yishai Hadas");
 MODULE_DESCRIPTION("NVIDIA GPU memory plug-in");
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_VERSION(DRV_VERSION);
+
+module_param(enable_dbg, int, 0000);
+MODULE_PARM_DESC(enable_dbg, "enable debug tracing");
+module_param(enable_info, int, 0000);
+MODULE_PARM_DESC(enable_info, "enable info tracing");
 
 #include <rdma/peer_mem.h>
 
@@ -235,7 +244,7 @@ static int nv_mem_acquire(unsigned long addr, size_t size, void *peer_mem_privat
 			&nv_mem_context->page_table, nv_mem_dummy_callback, nv_mem_context);
 
 	if (ret < 0) {
-                peer_err("nv_mem_acquire -- nvidia_p2p_get_pages error %d for addr=%lx\n", ret, addr);
+                peer_dbg("nv_mem_acquire -- nvidia_p2p_get_pages error %d for addr=%lx\n", ret, addr);
 		goto err;
         }
 
