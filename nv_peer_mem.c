@@ -49,7 +49,9 @@
 #define DRV_VERSION	"1.0"
 #define DRV_RELDATE	__DATE__
 
-#define peer_err(FMT, ARGS...) printk(KERN_ERR   DRV_NAME " %s:%d " FMT, __FUNCTION__, __LINE__, ## ARGS)
+#define peer_err(FMT, ARGS...)  printk(KERN_ERR   DRV_NAME " %s:%d " FMT, __FUNCTION__, __LINE__, ## ARGS)
+#define peer_info(FMT, ARGS...) printk(KERN_INFO  DRV_NAME " %s:%d " FMT, __FUNCTION__, __LINE__, ## ARGS)
+#define peer_dbg(FMT, ARGS...)  do { if (printk_ratelimit()) printk(KERN_DEBUG DRV_NAME " %s:%d " FMT, __FUNCTION__, __LINE__, ## ARGS); } while(0)
 
 
 MODULE_AUTHOR("Yishai Hadas");
@@ -149,11 +151,16 @@ static int nv_mem_acquire(unsigned long addr, size_t size, void *peer_mem_privat
 	nv_mem_context->page_virt_end   = (addr + size + GPU_PAGE_SIZE - 1) & GPU_PAGE_MASK;
 	nv_mem_context->mapped_size  = nv_mem_context->page_virt_end - nv_mem_context->page_virt_start;
 
+        peer_info("addr=%lx size=%zu page_virt_start=%llx mapped_size=%zu\n", 
+                  addr, size, nv_mem_context->page_virt_start, nv_mem_context->mapped_size);
+
 	ret = nvidia_p2p_get_pages(0, 0, nv_mem_context->page_virt_start, nv_mem_context->mapped_size,
 			&nv_mem_context->page_table, nv_mem_dummy_callback, nv_mem_context);
 
-	if (ret < 0)
+	if (ret < 0) {
+                peer_err("nv_mem_acquire -- nvidia_p2p_get_pages error %d for addr=%lx\n", ret, addr);
 		goto err;
+        }
 
 	ret = nvidia_p2p_put_pages(0, 0, nv_mem_context->page_virt_start,
 				   nv_mem_context->page_table);
@@ -187,9 +194,14 @@ static int nv_dma_map(struct sg_table *sg_head, void *context,
 		(struct nv_mem_context *) context;
 	struct nvidia_p2p_page_table *page_table = nv_mem_context->page_table;
 
-	if (nv_mem_context->page_table->page_size != NVIDIA_P2P_PAGE_SIZE_64KB) {
-		peer_err("nv_dma_map -- assumption of 64KB pages failed size_id=%u\n",
-					nv_mem_context->page_table->page_size);
+        if (!page_table) {
+            peer_err("error, invalid p2p page table\n");
+            return -EINVAL;
+        }
+
+	if (page_table->page_size != NVIDIA_P2P_PAGE_SIZE_64KB) {
+		peer_err("error, assumption of 64KB pages failed size_id=%u\n",
+			 page_table->page_size);
 		return -EINVAL;
 	}
 
@@ -197,7 +209,7 @@ static int nv_dma_map(struct sg_table *sg_head, void *context,
 						GPU_PAGE_SHIFT;
 
 	if (nv_mem_context->page_table->entries != nv_mem_context->npages) {
-		peer_err("nv_dma_map -- unexpected number of page table entries got=%u, expected=%lu\n",
+		peer_err("error, unexpected number of page table entries got=%u, expected=%lu\n",
 					nv_mem_context->page_table->entries,
 					nv_mem_context->npages);
 		return -EINVAL;
@@ -278,6 +290,8 @@ static int nv_mem_get_pages(unsigned long addr,
 	if (!nv_mem_context)
 		return -EINVAL;
 
+        peer_info("addr=%lx size=%zu\n", addr, size);
+
 	nv_mem_context->core_context = core_context;
 	nv_mem_context->page_size = GPU_PAGE_SIZE;
 
@@ -320,6 +334,9 @@ static int __init nv_mem_client_init(void)
 {
 	strcpy(nv_mem_client.name, DRV_NAME);
 	strcpy(nv_mem_client.version, DRV_VERSION);
+
+        peer_info("loading %s:%s\n", DRV_NAME, DRV_VERSION);
+
 	reg_handle = ib_register_peer_memory_client(&nv_mem_client,
 					     &mem_invalidate_callback);
 	if (!reg_handle)
@@ -330,6 +347,7 @@ static int __init nv_mem_client_init(void)
 
 static void __exit nv_mem_client_cleanup(void)
 {
+        peer_info("unloading %s:%s\n", DRV_NAME, DRV_VERSION);
 	ib_unregister_peer_memory_client(reg_handle);
 }
 
