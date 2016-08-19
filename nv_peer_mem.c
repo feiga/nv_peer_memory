@@ -51,8 +51,17 @@
 
 #define peer_err(FMT, ARGS...)  printk(KERN_ERR   DRV_NAME " %s:%d " FMT, __FUNCTION__, __LINE__, ## ARGS)
 #define peer_info(FMT, ARGS...) printk(KERN_INFO  DRV_NAME " %s:%d " FMT, __FUNCTION__, __LINE__, ## ARGS)
-#define peer_dbg(FMT, ARGS...)  do { if (printk_ratelimit()) printk(KERN_DEBUG DRV_NAME " %s:%d " FMT, __FUNCTION__, __LINE__, ## ARGS); } while(0)
 
+#if 0
+#define peer_dbg(FMT, ARGS...)  do { \
+        if (printk_ratelimit()) \
+            printk(KERN_DEBUG DRV_NAME " %s:%d " FMT, __FUNCTION__, __LINE__, ## ARGS); \
+    } while(0)
+#else
+#define peer_dbg(FMT, ARGS...)  do { } while(0)
+#endif
+
+#define MAX_SG_DUMP 10
 
 MODULE_AUTHOR("Yishai Hadas");
 MODULE_DESCRIPTION("NVIDIA GPU memory plug-in");
@@ -151,7 +160,7 @@ static int nv_mem_acquire(unsigned long addr, size_t size, void *peer_mem_privat
 	nv_mem_context->page_virt_end   = (addr + size + GPU_PAGE_SIZE - 1) & GPU_PAGE_MASK;
 	nv_mem_context->mapped_size  = nv_mem_context->page_virt_end - nv_mem_context->page_virt_start;
 
-        peer_info("addr=%lx size=%zu page_virt_start=%llx mapped_size=%zu\n", 
+        peer_dbg("addr=%lx size=%zu page_virt_start=%llx mapped_size=%zu\n", 
                   addr, size, nv_mem_context->page_virt_start, nv_mem_context->mapped_size);
 
 	ret = nvidia_p2p_get_pages(0, 0, nv_mem_context->page_virt_start, nv_mem_context->mapped_size,
@@ -290,7 +299,7 @@ static int nv_mem_get_pages(unsigned long addr,
 	if (!nv_mem_context)
 		return -EINVAL;
 
-        peer_info("addr=%lx size=%zu\n", addr, size);
+        peer_dbg("addr=%lx size=%zu\n", addr, size);
 
 	nv_mem_context->core_context = core_context;
 	nv_mem_context->page_size = GPU_PAGE_SIZE;
