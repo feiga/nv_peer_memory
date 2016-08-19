@@ -32,6 +32,7 @@
  */
 #include <linux/mm.h>
 #include <linux/dma-mapping.h>
+#include <linux/pci.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/slab.h>
@@ -40,13 +41,8 @@
 #include <linux/hugetlb.h>
 #include <linux/atomic.h>
 
-
-#include "nv-p2p.h"
-#include <rdma/peer_mem.h>
-
-
 #define DRV_NAME	"nv_mem"
-#define DRV_VERSION	"1.0"
+#define DRV_VERSION	"1.1"
 #define DRV_RELDATE	__DATE__
 
 #define peer_err(FMT, ARGS...)  printk(KERN_ERR   DRV_NAME " %s:%d " FMT, __FUNCTION__, __LINE__, ## ARGS)
@@ -68,6 +64,75 @@ MODULE_DESCRIPTION("NVIDIA GPU memory plug-in");
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_VERSION(DRV_VERSION);
 
+#include <rdma/peer_mem.h>
+
+#include <nv-p2p.h>
+
+#if defined(NVIDIA_P2P_DMA_MAPPING_VERSION) && NVIDIA_P2P_DMA_MAPPING_VERSION >= 0x00010001
+#warning "enabling support for nvidia_p2p_dma_map_pages"
+#define NV_DMA_MAPPING 1
+#else
+#define NV_DMA_MAPPING 0
+#endif
+
+static typeof(nvidia_p2p_get_pages) *nv_get_pages;
+static typeof(nvidia_p2p_put_pages) *nv_put_pages;
+static typeof(nvidia_p2p_free_page_table) *nv_free_page_table;
+#if NV_DMA_MAPPING
+static typeof(nvidia_p2p_dma_map_pages) *nv_dma_map_pages;
+static typeof(nvidia_p2p_dma_unmap_pages) *nv_dma_unmap_pages;
+static typeof(nvidia_p2p_free_dma_mapping) *nv_free_dma_mapping;
+#endif
+
+static int load_nv_symbols(void)
+{
+        int retcode = 0;        
+#define GET_NV_SYMBOL(FUNPTR, SYMNAME)                                  \
+        FUNPTR = symbol_get(SYMNAME);                                   \
+        if (!FUNPTR) {                                                  \
+                peer_err("can't get symbol for " #SYMNAME "\n");        \
+                retcode = -EINVAL;                                      \
+        } else {                                                        \
+                peer_info(#SYMNAME "=%p\n", FUNPTR);                 \
+        }
+
+        do {
+                GET_NV_SYMBOL(nv_get_pages,       nvidia_p2p_get_pages);
+                GET_NV_SYMBOL(nv_put_pages,       nvidia_p2p_put_pages);
+                GET_NV_SYMBOL(nv_free_page_table, nvidia_p2p_free_page_table);
+#if NV_DMA_MAPPING
+                GET_NV_SYMBOL(nv_dma_map_pages,   nvidia_p2p_dma_map_pages);
+                GET_NV_SYMBOL(nv_dma_unmap_pages, nvidia_p2p_dma_unmap_pages);
+                GET_NV_SYMBOL(nv_free_dma_mapping, nvidia_p2p_free_dma_mapping);
+#endif
+        } while(0);
+        if (retcode) {
+                if (nv_get_pages)       symbol_put(nvidia_p2p_get_pages);
+                if (nv_put_pages)       symbol_put(nvidia_p2p_put_pages);
+                if (nv_free_page_table) symbol_put(nvidia_p2p_free_page_table);
+#if NV_DMA_MAPPING
+                if (nv_dma_map_pages)   symbol_put(nvidia_p2p_dma_map_pages);
+                if (nv_dma_unmap_pages) symbol_put(nvidia_p2p_dma_unmap_pages);
+                if (nv_free_dma_mapping)symbol_put(nvidia_p2p_free_dma_mapping);
+#endif
+                return retcode;
+        }
+        return 0;
+}
+
+static void unload_nv_symbols(void)
+{
+        if (nv_get_pages)       symbol_put(nvidia_p2p_get_pages);
+        if (nv_put_pages)       symbol_put(nvidia_p2p_put_pages);
+        if (nv_free_page_table) symbol_put(nvidia_p2p_free_page_table);
+#if NV_DMA_MAPPING
+        if (nv_dma_map_pages)   symbol_put(nvidia_p2p_dma_map_pages);
+        if (nv_dma_unmap_pages) symbol_put(nvidia_p2p_dma_unmap_pages);
+        if (nv_free_dma_mapping)symbol_put(nvidia_p2p_free_dma_mapping);
+#endif
+}
+
+
 #define GPU_PAGE_SHIFT   16
 #define GPU_PAGE_SIZE    ((u64)1 << GPU_PAGE_SHIFT)
 #define GPU_PAGE_OFFSET  (GPU_PAGE_SIZE-1)
@@ -79,6 +144,9 @@ static void *reg_handle;
 
 struct nv_mem_context {
 	struct nvidia_p2p_page_table *page_table;
+#if NV_DMA_MAPPING
+        struct nvidia_p2p_dma_mapping *dma_mapping;
+#endif
 	void *core_context;
 	u64 page_virt_start;
 	u64 page_virt_end;
@@ -117,7 +185,7 @@ static void nv_get_p2p_free_callback(void *data)
 
 	ACCESS_ONCE(nv_mem_context->is_callback) = 1;
 	(*mem_invalidate_callback) (reg_handle, nv_mem_context->core_context);
-	ret = nvidia_p2p_free_page_table(page_table);
+	ret = nv_free_page_table(page_table);
 	if (ret)
 		peer_err("nv_get_p2p_free_callback -- error %d while calling nvidia_p2p_free_page_table()\n", ret);
 
@@ -135,7 +203,7 @@ static void nv_mem_dummy_callback(void *data)
 
 	__module_get(THIS_MODULE);
 
-	ret = nvidia_p2p_free_page_table(nv_mem_context->page_table);
+	ret = nv_free_page_table(nv_mem_context->page_table);
 	if (ret)
 		peer_err("nv_mem_dummy_callback -- error %d while calling nvidia_p2p_free_page_table()\n", ret);
 
@@ -163,7 +231,7 @@ static int nv_mem_acquire(unsigned long addr, size_t size, void *peer_mem_privat
         peer_dbg("addr=%lx size=%zu page_virt_start=%llx mapped_size=%zu\n", 
                   addr, size, nv_mem_context->page_virt_start, nv_mem_context->mapped_size);
 
-	ret = nvidia_p2p_get_pages(0, 0, nv_mem_context->page_virt_start, nv_mem_context->mapped_size,
+	ret = nv_get_pages(0, 0, nv_mem_context->page_virt_start, nv_mem_context->mapped_size,
 			&nv_mem_context->page_table, nv_mem_dummy_callback, nv_mem_context);
 
 	if (ret < 0) {
@@ -171,8 +239,8 @@ static int nv_mem_acquire(unsigned long addr, size_t size, void *peer_mem_privat
 		goto err;
         }
 
-	ret = nvidia_p2p_put_pages(0, 0, nv_mem_context->page_virt_start,
-				   nv_mem_context->page_table);
+	ret = nv_put_pages(0, 0, nv_mem_context->page_virt_start,
+                           nv_mem_context->page_table);
 	if (ret < 0) {
 		/* Not expected, however in case callback was called on that buffer just before
 		    put pages we'll expect to fail gracefully (confirmed by NVIDIA) and return an error.
@@ -214,6 +282,40 @@ static int nv_dma_map(struct sg_table *sg_head, void *context,
 		return -EINVAL;
 	}
 
+#if NV_DMA_MAPPING
+        {
+#define to_pci_dev(n) container_of(n, struct pci_dev, dev)
+
+                struct pci_dev *pci_device = to_pci_dev(dma_device);
+                struct nvidia_p2p_dma_mapping *dma_mapping;
+
+                ret = nv_dma_map_pages(pci_device, page_table, &dma_mapping);
+                if (ret) {
+                        peer_err("error %d in nvidia_p2p_dma_map_pages\n",
+                                 ret);
+                        return ret;
+                }
+
+                nv_mem_context->npages = dma_mapping->entries;
+
+                ret = sg_alloc_table(sg_head, dma_mapping->entries, GFP_KERNEL);
+                if (ret) {
+                        nv_dma_unmap_pages(pci_device, page_table, dma_mapping);
+                        return ret;
+                }
+                nv_mem_context->dma_mapping = dma_mapping;
+
+                nv_mem_context->sg_allocated = 1;
+                for_each_sg(sg_head->sgl, sg, dma_mapping->entries, i) {
+                        sg_set_page(sg, NULL, GPU_PAGE_SIZE, 0);
+                        sg->dma_address = dma_mapping->dma_addresses[i];
+                        sg->dma_length = GPU_PAGE_SIZE;
+                        if (i<MAX_SG_DUMP) 
+                                peer_dbg("sg[%d] 0x%016llx %u %s\n", 
+                                          i, sg->dma_address, sg->dma_length, (i==(MAX_SG_DUMP-1))?"and counting...":"");
+                }
+	}
+#else
 	nv_mem_context->npages = PAGE_ALIGN(nv_mem_context->mapped_size) >>
 						GPU_PAGE_SHIFT;
 
@@ -233,15 +335,30 @@ static int nv_dma_map(struct sg_table *sg_head, void *context,
 		sg_set_page(sg, NULL, nv_mem_context->page_size, 0);
 		sg->dma_address = page_table->pages[i]->physical_address;
 		sg->dma_length = nv_mem_context->page_size;
+                if (i<MAX_SG_DUMP)
+                    peer_dbg("nv_dma_map -- %d 0x%016llx %u\n", i, sg->dma_address, sg->dma_length);
 	}
+#endif
 
 	*nmap = nv_mem_context->npages;
-	return 0;
+	return ret;
 }
 
 static int nv_dma_unmap(struct sg_table *sg_head, void *context,
 			   struct device  *dma_device)
 {
+	struct nv_mem_context *nv_mem_context =
+		(struct nv_mem_context *) context;
+        if (!nv_mem_context) {
+                peer_err("invalid context\n");
+                return -EINVAL;
+        }
+#if NV_DMA_MAPPING
+        if (nv_mem_context->dma_mapping) {
+                peer_dbg("freeing dma_mapping %p\n", nv_mem_context->dma_mapping);
+                nv_free_dma_mapping(nv_mem_context->dma_mapping);
+        }
+#endif
 	return 0;
 }
 
@@ -255,7 +372,7 @@ static void nv_mem_put_pages(struct sg_table *sg_head, void *context)
 	if (ACCESS_ONCE(nv_mem_context->is_callback))
 		goto out;
 
-	ret = nvidia_p2p_put_pages(0, 0, nv_mem_context->page_virt_start,
+	ret = nv_put_pages(0, 0, nv_mem_context->page_virt_start,
 				   nv_mem_context->page_table);
 
 #ifdef _DEBUG_ONLY_
@@ -304,7 +421,7 @@ static int nv_mem_get_pages(unsigned long addr,
 	nv_mem_context->core_context = core_context;
 	nv_mem_context->page_size = GPU_PAGE_SIZE;
 
-	ret = nvidia_p2p_get_pages(0, 0, nv_mem_context->page_virt_start, nv_mem_context->mapped_size,
+	ret = nv_get_pages(0, 0, nv_mem_context->page_virt_start, nv_mem_context->mapped_size,
 			&nv_mem_context->page_table, nv_get_p2p_free_callback, nv_mem_context);
 	if (ret < 0) {
 		peer_err("nv_mem_get_pages -- error %d while calling nvidia_p2p_get_pages()\n", ret);
@@ -346,6 +463,9 @@ static int __init nv_mem_client_init(void)
 
         peer_info("loading %s:%s\n", DRV_NAME, DRV_VERSION);
 
+        if (load_nv_symbols())
+                return -EINVAL;
+
 	reg_handle = ib_register_peer_memory_client(&nv_mem_client,
 					     &mem_invalidate_callback);
 	if (!reg_handle)
@@ -357,6 +477,7 @@ static int __init nv_mem_client_init(void)
 static void __exit nv_mem_client_cleanup(void)
 {
         peer_info("unloading %s:%s\n", DRV_NAME, DRV_VERSION);
+        unload_nv_symbols();
 	ib_unregister_peer_memory_client(reg_handle);
 }
 
