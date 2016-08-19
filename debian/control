@@ -3,7 +3,7 @@ Section: kernel
 Priority: optional
 Maintainer: Yishai Hadas <yishaih@mellanox.com>
 Build-Depends: debhelper (>= 8.0.0), autotools-dev, bzip2, dkms
-Standards-Version: 1.0
+Standards-Version: 1.1
 Homepage: http://www.mellanox.com
 
 Package: nvidia-peer-memory
