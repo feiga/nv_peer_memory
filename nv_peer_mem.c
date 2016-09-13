@@ -110,6 +110,8 @@ static int load_nv_symbols(void)
                 GET_NV_SYMBOL(nv_put_pages,       nvidia_p2p_put_pages);
                 GET_NV_SYMBOL(nv_free_page_table, nvidia_p2p_free_page_table);
 #if NV_DMA_MAPPING
+                // TODO: even if compiled with newer NV API, be resilient to older 
+                //       NV drivers, e.g. by checking symbol_get of nv_dma_map_pages
                 GET_NV_SYMBOL(nv_dma_map_pages,   nvidia_p2p_dma_map_pages);
                 GET_NV_SYMBOL(nv_dma_unmap_pages, nvidia_p2p_dma_unmap_pages);
                 GET_NV_SYMBOL(nv_free_dma_mapping, nvidia_p2p_free_dma_mapping);
@@ -246,6 +248,13 @@ static int nv_mem_acquire(unsigned long addr, size_t size, void *peer_mem_privat
 	if (ret < 0) {
                 peer_dbg("nv_mem_acquire -- nvidia_p2p_get_pages error %d for addr=%lx\n", ret, addr);
 		goto err;
+        }
+
+        if ((nv_mem_context->page_table->version & 0xffff0000) != 
+            (NVIDIA_P2P_PAGE_TABLE_VERSION       & 0xffff0000)) {
+                peer_err("nv_mem_acquire -- incompatible page table version 0x%08x\n", nv_mem_context->page_table->version);
+                nv_put_pages(0, 0, nv_mem_context->page_virt_start, nv_mem_context->page_table);
+                goto err;
         }
 
 	ret = nv_put_pages(0, 0, nv_mem_context->page_virt_start,
@@ -477,8 +486,10 @@ static int __init nv_mem_client_init(void)
 
 	reg_handle = ib_register_peer_memory_client(&nv_mem_client,
 					     &mem_invalidate_callback);
-	if (!reg_handle)
+	if (!reg_handle) {
+                unload_nv_symbols();
 		return -EINVAL;
+        }
 
 	return 0;
 }
