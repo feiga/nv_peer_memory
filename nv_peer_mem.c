@@ -77,12 +77,55 @@ MODULE_PARM_DESC(enable_info, "enable info tracing");
 
 #include <nv-p2p.h>
 
-#if defined(NVIDIA_P2P_DMA_MAPPING_VERSION) && NVIDIA_P2P_DMA_MAPPING_VERSION >= 0x00010001
+#ifndef NVIDIA_P2P_MAJOR_VERSION_MASK
+#define NVIDIA_P2P_MAJOR_VERSION_MASK   0xffff0000
+#endif
+#ifndef NVIDIA_P2P_MINOR_VERSION_MASK
+#define NVIDIA_P2P_MINOR_VERSION_MASK   0x0000ffff
+#endif
+
+#ifndef NVIDIA_P2P_MAJOR_VERSION
+#define NVIDIA_P2P_MAJOR_VERSION(v) \
+    (((v) & NVIDIA_P2P_MAJOR_VERSION_MASK) >> 16)
+#endif
+
+#ifndef NVIDIA_P2P_MINOR_VERSION
+#define NVIDIA_P2P_MINOR_VERSION(v) \
+    (((v) & NVIDIA_P2P_MINOR_VERSION_MASK))
+#endif
+
+#ifndef NVIDIA_P2P_MAJOR_VERSION_MATCHES
+#define NVIDIA_P2P_MAJOR_VERSION_MATCHES(p, v) \
+    (NVIDIA_P2P_MAJOR_VERSION((p)->version) == NVIDIA_P2P_MAJOR_VERSION(v))
+#endif
+
+#ifndef NVIDIA_P2P_VERSION_COMPATIBLE
+#define NVIDIA_P2P_VERSION_COMPATIBLE(p, v)             \
+    (NVIDIA_P2P_MAJOR_VERSION_MATCHES(p, v) &&          \
+    (NVIDIA_P2P_MINOR_VERSION((p)->version) >= NVIDIA_P2P_MINOR_VERSION(v)))
+#endif
+
+#ifndef NVIDIA_P2P_PAGE_TABLE_VERSION_COMPATIBLE
+#define NVIDIA_P2P_PAGE_TABLE_VERSION_COMPATIBLE(p) \
+    NVIDIA_P2P_VERSION_COMPATIBLE(p, NVIDIA_P2P_PAGE_TABLE_VERSION)
+#endif
+
+/* 
+ * Note: before major version 2, struct dma_mapping had no version field,
+ *       so it is not possible to check version compatibility. In this case
+ *       let us just avoid dma mappings altogether.
+ */
+#if defined(NVIDIA_P2P_DMA_MAPPING_VERSION) && \
+    (NVIDIA_P2P_MAJOR_VERSION(NVIDIA_P2P_DMA_MAPPING_VERSION) >= 2)
 #warning "enabling support for nvidia_p2p_dma_map_pages"
 #define NV_DMA_MAPPING 1
 #else
 #define NV_DMA_MAPPING 0
 #endif
+
+/*
+ * run-time binding to NV module symbols
+ */
 
 static typeof(nvidia_p2p_get_pages) *nv_get_pages;
 static typeof(nvidia_p2p_put_pages) *nv_put_pages;
@@ -250,9 +293,8 @@ static int nv_mem_acquire(unsigned long addr, size_t size, void *peer_mem_privat
 		goto err;
         }
 
-        if ((nv_mem_context->page_table->version & 0xffff0000) != 
-            (NVIDIA_P2P_PAGE_TABLE_VERSION       & 0xffff0000)) {
-                peer_err("nv_mem_acquire -- incompatible page table version 0x%08x\n", nv_mem_context->page_table->version);
+        if (!NVIDIA_P2P_PAGE_TABLE_VERSION_COMPATIBLE(nv_mem_context->page_table)) {
+                peer_err("error, incompatible page table version 0x%08x\n", nv_mem_context->page_table->version);
                 nv_put_pages(0, 0, nv_mem_context->page_virt_start, nv_mem_context->page_table);
                 goto err;
         }
@@ -314,6 +356,11 @@ static int nv_dma_map(struct sg_table *sg_head, void *context,
                         return ret;
                 }
 
+                if (!NVIDIA_P2P_DMA_MAPPING_VERSION_COMPATIBLE(dma_mapping)) {
+                        peer_err("error, incompatible dma mapping version 0x%08x\n", dma_mapping->version);
+                        nv_dma_unmap_pages(pci_device, page_table, dma_mapping);
+                        return -EINVAL;
+                }
                 nv_mem_context->npages = dma_mapping->entries;
 
                 ret = sg_alloc_table(sg_head, dma_mapping->entries, GFP_KERNEL);
