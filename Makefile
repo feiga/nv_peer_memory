@@ -4,7 +4,7 @@ OFA_KERNEL=$(shell (test -d /usr/src/ofa_kernel/default && echo /usr/src/ofa_ker
 
 ccflags-y += -I$(OFA_KERNEL)/include/ -I$(OFA_KERNEL)/include/rdma
 
-NVIDIA=$(shell (find /usr/src/nvidia-* -name "nv-p2p.h"|xargs dirname))
+NVIDIA ?= $(shell (find /usr/src/nvidia-* -name "nv-p2p.h"|xargs dirname))
 ccflags-y +=-I$(NVIDIA)
 
 PWD  := $(shell pwd)
