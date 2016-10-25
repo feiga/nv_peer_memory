@@ -43,10 +43,10 @@ ex tar czf nvidia_peer_memory-$VERSION.tar.gz nvidia_peer_memory-$VERSION --excl
 
 echo
 echo "Building source rpm for nvidia_peer_memory..."
-mkdir -p $tmpdir/topdir/{SRPMS,RPMS,SPECS,BUILD}
-ex "rpmbuild -ts --nodeps --define '_topdir $tmpdir/topdir' --define 'dist %{nil}' --define '_source_filedigest_algorithm md5' --define '_binary_filedigest_algorithm md5' nvidia_peer_memory-$VERSION.tar.gz >/dev/null"
-srpm=`ls -1 $tmpdir/topdir/SRPMS/`
-mv $tmpdir/topdir/SRPMS/$srpm /tmp
+#mkdir -p $tmpdir/topdir/{SRPMS,RPMS,SPECS,BUILD}
+#ex "rpmbuild -ts --nodeps --define '_topdir $tmpdir/topdir' --define 'dist %{nil}' --define '_source_filedigest_algorithm md5' --define '_binary_filedigest_algorithm md5' nvidia_peer_memory-$VERSION.tar.gz >/dev/null"
+#srpm=`ls -1 $tmpdir/topdir/SRPMS/`
+#mv $tmpdir/topdir/SRPMS/$srpm /tmp
 
 echo "Building debian tarball for nvidia-peer-memory..."
 ex mv nvidia_peer_memory-$VERSION nvidia-peer-memory-$VERSION
